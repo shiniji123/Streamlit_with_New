@@ -276,12 +276,78 @@ def withdraw_course_page():
     # ดึง student_id จาก session
     student_id = st.session_state.get("username", None)
     if student_id:
-        # ดึงข้อมูลรายวิชาที่ลงทะเบียนแล้ว
-        enrolled_courses = get_enrolled_courses(student_id)
-        if not enrolled_courses.empty:
-            st.dataframe(enrolled_courses)
+        # ดึงข้อมูลรายวิชาที่ลงทะเบียนแล้ว (ไม่รวมวิชาที่เกรดเป็น W)
+        conn = create_connection()
+        if conn:
+            query = """
+                SELECT c.course_id, c.course_name, c.credits
+                FROM course c
+                INNER JOIN enrollment e ON c.course_id = e.course_id
+                WHERE e.student_id = %s AND (e.grade IS NULL OR e.grade NOT IN ('W'))
+            """
+            enrolled_courses = pd.read_sql(query, conn, params=(student_id,))
+            close_connection(conn)
+
+            if not enrolled_courses.empty:
+                # สร้างช่องเลือกสำหรับรายวิชา
+                course_selection = {}
+                for index, row in enrolled_courses.iterrows():
+                    course_selection[row['course_id']] = {
+                        "checkbox": st.checkbox(
+                            f"{row['course_name']} ({row['credits']} credits)", key=f"withdraw_{row['course_id']}"
+                        ),
+                        "course_name": row['course_name']
+                    }
+
+                # เช็คสถานะว่ากำลังอยู่ในขั้นตอนการยืนยัน
+                if "confirmation_step" not in st.session_state:
+                    st.session_state["confirmation_step"] = False
+
+                # หากยังไม่ได้อยู่ในขั้นตอนยืนยัน
+                if not st.session_state["confirmation_step"]:
+                    col1, col2, col3, col4 = st.columns([1, 1, 1, 1])
+                    with col4:
+                        if st.button("Submit"):
+                            # ตรวจสอบรายวิชาที่เลือก
+                            selected_courses = [
+                                {"course_id": course_id, "course_name": data["course_name"]}
+                                for course_id, data in course_selection.items() if data["checkbox"]
+                            ]
+                            if selected_courses:
+                                # ตั้งสถานะให้เข้าสู่ขั้นตอนยืนยัน
+                                st.session_state["confirmation_step"] = True
+                                st.session_state["selected_courses"] = selected_courses
+                            else:
+                                st.warning("Please select at least one course to withdraw.")
+                else:
+                    # แสดงข้อความยืนยัน
+                    st.warning("Are you sure you want to withdraw these courses?")
+                    st.write("Selected courses:")
+                    for course in st.session_state["selected_courses"]:
+                        st.write(f"- {course['course_id']}: {course['course_name']}")
+
+                    # ปุ่มยืนยันและยกเลิก
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        if st.button("Confirm"):
+                            withdraw_courses(
+                                student_id,
+                                [course["course_id"] for course in st.session_state["selected_courses"]]
+                            )
+                            # รีเซ็ตสถานะการยืนยันและอัปเดตตาราง
+                            st.session_state["confirmation_step"] = False
+                            st.session_state.pop("selected_courses", None)
+                            st.experimental_rerun()
+
+                    with col2:
+                        if st.button("Cancel"):
+                            # ยกเลิกการยืนยันและรีเซ็ตสถานะ
+                            st.session_state["confirmation_step"] = False
+                            st.session_state.pop("selected_courses", None)
+            else:
+                st.info("You have no enrolled courses available for withdrawal.")
         else:
-            st.info("You have not enrolled in any courses yet.")
+            st.error("Unable to connect to the database.")
     else:
         st.error("Student ID not found. Please log in again.")
 
@@ -289,14 +355,48 @@ def withdraw_course_page():
     if st.button("Back"):
         st.session_state["current_page"] = "Student Registration System"
 
+
+def withdraw_courses(student_id, course_ids):
+    conn = create_connection()
+    if conn:
+        try:
+            cursor = conn.cursor()
+            for course_id in course_ids:
+                # อัปเดตเกรดในตาราง enrollment เป็น "W"
+                query = """
+                    UPDATE enrollment
+                    SET grade = 'W'
+                    WHERE student_id = %s AND course_id = %s
+                """
+                cursor.execute(query, (student_id, course_id))
+            conn.commit()
+            st.success("Courses successfully withdrawn.")
+        except Error as e:
+            st.error(f"Error withdrawing courses: {e}")
+        finally:
+            close_connection(conn)
+
+
 # ========================================
 # หน้าแสดงผล Student Registration System
 def student_registration_system_page():
     st.title("Student Registration System")
-    st.write(f"Welcome, {st.session_state['username']}!")
-    st.write("Select an option below:")
 
-    # Layout for the buttons
+    # ดึง student_id จาก session
+    student_id = st.session_state.get("username", None)
+    if student_id:
+        # ดึง URL รูปภาพโปรไฟล์
+        profile_image = get_profile_image(student_id)
+
+        # Layout: ส่วนหัวของหน้า (ข้อความและรูปภาพ)
+        col1, col2 = st.columns([3, 1])  # สร้าง 2 คอลัมน์ (ข้อความ 3 ส่วน, รูปภาพ 1 ส่วน)
+        with col1:
+            st.write(f"Welcome, **{student_id}**!")
+            st.write("Select an option below:")
+        with col2:
+            st.image(profile_image, width=100)  # แสดงรูปภาพด้านขวา
+
+    # Layout สำหรับปุ่มต่างๆ
     col1, col2 = st.columns(2)
     col3, col4 = st.columns(2)
 
@@ -313,13 +413,14 @@ def student_registration_system_page():
             st.session_state["current_page"] = "Withdraw Course"
 
     with col4:
-        if st.button("Registration Status"):  # เพิ่มคำสั่งเปลี่ยนหน้า
+        if st.button("Registration Status"):
             st.session_state["current_page"] = "Registration Status"
 
     # Logout Button
     if st.button("Logout"):
         st.session_state["logged_in"] = False
         st.session_state.pop("username", None)  # ลบ username ออกจาก session state
+  # ลบ username ออกจาก session state
 
 # ========================================
 # หน้าแสดงผลล็อกอิน
@@ -329,12 +430,13 @@ def login_page():
     input_username = st.text_input("Username (Student ID)", placeholder="Enter your Student ID")
     input_password = st.text_input("Password", type="password", placeholder="Enter your password")
 
+
     if st.button("Login"):
         try_login(input_username, input_password)
 
 
 def get_profile_image(student_id):
-    base_url = "https://github.com/shiniji123/Streamlit_with_New/blob/main/image/"
+    base_url = "https://raw.githubusercontent.com/shiniji123/Streamlit_with_New/main/image/"
     default_image = f"{base_url}default_profile.jpg"
     profile_image = f"{base_url}profile_{student_id}.jpg"
 
@@ -355,7 +457,7 @@ def registration_status_page():
         conn = create_connection()
         if conn:
             try:
-                # ดึงข้อมูลนักศึกษา
+                # ดึงข้อมูลนักศึกษาจากตาราง student
                 student_query = """
                     SELECT student_id, first_name, last_name
                     FROM student
@@ -364,16 +466,16 @@ def registration_status_page():
                 student_data = pd.read_sql(student_query, conn, params=(student_id,))
 
                 if not student_data.empty:
-                    profile_image = get_profile_image(student_id)  # ดึง URL รูปโปรไฟล์
-
+                    # แสดงข้อมูลนักศึกษาและรูปภาพ
                     col1, col2 = st.columns([1, 3])
                     with col1:
-                        st.image(profile_image, width=150)  # แสดงรูป
+                        profile_image = get_profile_image(student_id)
+                        st.image(profile_image, width=150)
                     with col2:
                         st.write(f"**Student ID:** {student_data['student_id'].iloc[0]}")
                         st.write(f"**Name:** {student_data['first_name'].iloc[0]} {student_data['last_name'].iloc[0]}")
 
-                    # ดึงข้อมูลวิชาที่ลงทะเบียน
+                    # ดึงข้อมูลรายวิชา
                     enrollment_query = """
                         SELECT c.course_id, c.course_name, c.credits, e.grade
                         FROM enrollment e
@@ -388,13 +490,17 @@ def registration_status_page():
 
                         # คำนวณ GPAX
                         grade_to_gpa = {'A': 4.0, 'B': 3.0, 'C': 2.0, 'D': 1.0, 'F': 0.0}
-                        enrollment_data['gpa'] = enrollment_data['grade'].map(grade_to_gpa)
-                        enrollment_data['weighted_gpa'] = enrollment_data['gpa'] * enrollment_data['credits']
-                        total_credits = enrollment_data['credits'].sum()
-                        total_weighted_gpa = enrollment_data['weighted_gpa'].sum()
+                        valid_courses = enrollment_data[
+                            enrollment_data['grade'].isin(grade_to_gpa.keys())
+                        ]
+                        valid_courses['gpa'] = valid_courses['grade'].map(grade_to_gpa)
+                        valid_courses['weighted_gpa'] = valid_courses['gpa'] * valid_courses['credits']
+                        total_credits = valid_courses['credits'].sum()
+                        total_weighted_gpa = valid_courses['weighted_gpa'].sum()
 
                         gpax = total_weighted_gpa / total_credits if total_credits > 0 else 0.0
                         st.metric("GPAX", f"{gpax:.2f}")
+
                     else:
                         st.info("No courses enrolled yet.")
                 else:
@@ -406,9 +512,9 @@ def registration_status_page():
     else:
         st.error("Student ID not found. Please log in again.")
 
+    # ปุ่มกลับไปหน้า Student Registration System
     if st.button("Back"):
         st.session_state["current_page"] = "Student Registration System"
-
 
 # ========================================
 # ฟังก์ชันสำหรับตรวจสอบการเข้าสู่ระบบ
