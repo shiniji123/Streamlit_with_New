@@ -3,3 +3,6 @@ mysql-connector-python
 pandas
 psycopg2-binary
 python-dotenv
+sympy
+numpy
+matplotlib
