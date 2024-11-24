@@ -6,3 +6,4 @@ python-dotenv
 sympy
 numpy
 matplotlib
+streamlit_option_menu
