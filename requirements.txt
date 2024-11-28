@@ -9,4 +9,3 @@ matplotlib
 streamlit_option_menu
 bcrypt
 base64
-hashlib
