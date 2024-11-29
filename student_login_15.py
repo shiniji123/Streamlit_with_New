@@ -810,7 +810,7 @@ def main():
                 default_index=default_index,
             )
 
-            if selected_option == "Logout":
+            if selected_option == "Log Out":
                 st.session_state.clear()
                 st.session_state['current_page'] = "Login"
                 st.rerun()
